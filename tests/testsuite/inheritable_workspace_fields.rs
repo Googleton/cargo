@@ -1,8 +1,10 @@
 //! Tests for inheriting Cargo.toml fields with field.workspace = true
 use cargo_test_support::registry::{Dependency, Package};
 use cargo_test_support::{
-    basic_lib_manifest, basic_manifest, git, path2url, paths, project, publish, registry,
+    basic_lib_manifest, basic_manifest, cargo_process, git, path2url, paths, project, publish,
+    registry,
 };
+use std::fs;
 
 #[cargo_test]
 fn permit_additional_workspace_fields() {
@@ -1460,4 +1462,53 @@ Caused by:
 ",
         )
         .run();
+}
+
+#[cargo_test]
+fn new_project_inherits_package() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [workspace]
+            members = ["bar"]
+
+            [workspace.package]
+            version = "1.2.3"
+            authors = ["Rustaceans"]
+            description = "This is a crate"
+            homepage = "https://www.rust-lang.org"
+            license = "MIT"
+            license-file = "LICENSE"
+            edition = "2018"
+        "#,
+        )
+        .build();
+
+    cargo_process("new foo/bar").run();
+
+    let lib = paths::root().join("foo/bar/Cargo.toml");
+    let contents = fs::read_to_string(&lib).unwrap();
+
+    assert_eq!(
+        contents,
+        r#"[package]
+name = "bar"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+homepage.workspace = true
+license.workspace = true
+license-file.workspace = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+"#
+    );
+
+    // p.cargo("check").run();
+    // let lockfile = p.read_lockfile();
+    // assert!(!lockfile.contains("dep"));
 }
