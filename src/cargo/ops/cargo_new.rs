@@ -1,5 +1,6 @@
-use crate::core::{Edition, Shell, Workspace};
-use crate::util::errors::CargoResult;
+use crate::core::{find_workspace_root, Edition, EitherManifest, Shell, SourceId, Workspace};
+use crate::util::errors::{CargoResult, ManifestError};
+use crate::util::toml::{parse_document, read_manifest};
 use crate::util::{existing_vcs_repo, FossilRepo, GitRepo, HgRepo, PijulRepo};
 use crate::util::{restricted_names, Config};
 use anyhow::Context as _;
@@ -12,7 +13,7 @@ use std::io::{BufRead, BufReader, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::{from_utf8, FromStr};
-use toml_edit::easy as toml;
+use toml_edit::{easy as toml, table, value, Key, Value};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum VersionControl {
@@ -841,13 +842,53 @@ mod tests {
         }
     }
 
-    if let Err(e) = Workspace::new(&path.join("Cargo.toml"), config) {
-        crate::display_warning_with_error(
-            "compiling this new package may not work due to invalid \
+    match Workspace::new(&path.join("Cargo.toml"), config) {
+        Ok(mut workspace) => {
+            let source_id = SourceId::for_path(workspace.root_manifest())?;
+
+            let contents = paths::read(workspace.root_manifest())
+                .map_err(|err| ManifestError::new(err, path.into()))?;
+            let workspace_document =
+                parse_document(contents.as_str(), workspace.root_manifest(), config)?;
+
+            let keys: Vec<&Key> = workspace_document["workspace"]["package"]
+                .as_table()
+                .expect("[workspace.package] not found or not a table, brother.")
+                .get_values()
+                .into_iter()
+                .map(|f| f.0)
+                .flatten()
+                .collect();
+
+            if keys.len() > 0 {
+                let contents = paths::read(&path.join("Cargo.toml"))
+                    .map_err(|err| ManifestError::new(err, path.into()))?;
+                let mut project_document = parse_document(contents.as_str(), path, config)?;
+
+                for key in keys {
+                    let mut table = table();
+                    table
+                        .as_table_mut()
+                        // Still unsure how to handle errors...
+                        .expect("Could not get table as mut.")
+                        .set_dotted(true);
+                    table["workspace"] = value(true);
+                    project_document["package"][key.get()] = table;
+                }
+
+                project_document.fmt();
+
+                paths::write(&path.join("Cargo.toml"), project_document.to_string())?;
+            }
+        }
+        Err(e) => {
+            crate::display_warning_with_error(
+                "compiling this new package may not work due to invalid \
              workspace configuration",
-            &e,
-            &mut config.shell(),
-        );
+                &e,
+                &mut config.shell(),
+            );
+        }
     }
 
     Ok(())
